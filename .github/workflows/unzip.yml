@@ -1,0 +1,105 @@
+name: Unzip SX Converter
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Find ZIP File
+        run: |
+          ZIP_FILE=$(find . -maxdepth 2 -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "❌ ZIP file not found!"
+            exit 1
+          fi
+
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+          echo "✅ Found ZIP: $ZIP_FILE"
+
+      - name: Extract ZIP
+        run: |
+          rm -rf extracted
+          mkdir extracted
+
+          unzip -o "$ZIP_FILE" -d extracted
+
+          echo "✅ ZIP extracted successfully."
+
+      - name: Copy Files To Repository Root
+        run: |
+          set -e
+
+          ROOT="extracted"
+
+          # Detect wrapper folder automatically
+          FIRST_DIR=$(find extracted -mindepth 1 -maxdepth 1 -type d | head -n 1)
+
+          if [ -n "$FIRST_DIR" ]; then
+            FILE_COUNT=$(find extracted -maxdepth 1 -type f | wc -l)
+
+            if [ "$FILE_COUNT" -eq 0 ]; then
+              ROOT="$FIRST_DIR"
+            fi
+          fi
+
+          echo "Project root: $ROOT"
+
+          # Copy project files
+          cp -a "$ROOT"/. .
+
+          # Remove temporary files
+          rm -rf extracted
+          rm -f "$ZIP_FILE"
+
+          echo "✅ Project files copied to repository root."
+
+      - name: Verify Project
+        run: |
+          echo "===== SX CONVERTER PROJECT ====="
+
+          if [ -f "index.html" ]; then
+            echo "✅ index.html"
+          fi
+
+          if [ -f "package.json" ]; then
+            echo "✅ package.json"
+          fi
+
+          if [ -f "Dockerfile" ]; then
+            echo "✅ Dockerfile"
+          fi
+
+          if [ -d "server" ]; then
+            echo "✅ server/"
+          fi
+
+          if [ -d "public" ]; then
+            echo "✅ public/"
+          fi
+
+          echo "================================"
+
+      - name: Commit Changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Extract SX Converter project"
+          git push
