@@ -1,4 +1,4 @@
-name: SX CONVERTER - Extract ZIP
+name: SX CONVERTER V1.1 - ZIP Extract
 
 on:
   workflow_dispatch:
@@ -8,159 +8,227 @@ permissions:
 
 jobs:
   unzip:
+    name: Extract SX CONVERTER
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Install 7zip
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y p7zip-full
-
-      - name: Locate ZIP
+      - name: Show repository files
         shell: bash
         run: |
-          echo "Searching repository for ZIP..."
+          echo "========================================"
+          echo "FILES IN SX-CONVERTER-V1.1"
+          echo "========================================"
 
-          ZIP=$(find "$GITHUB_WORKSPACE" \
+          find . \
             -type f \
-            -iname "*.zip" \
-            -not -path "*/.git/*" \
-            | head -1)
+            -not -path "./.git/*" \
+            -print
 
-          if [ -z "$ZIP" ]; then
-            echo "================================"
-            echo "ERROR: NO ZIP FILE FOUND"
-            echo "================================"
-            echo "Repository files:"
-            find "$GITHUB_WORKSPACE" \
-              -maxdepth 3 \
+          echo "========================================"
+
+      - name: Find SX Converter ZIP
+        shell: bash
+        run: |
+          ZIP_FILE=""
+
+          # First try the expected filename
+          if [ -f "./SX-CONVERTER-GITHUB-READY.zip" ]; then
+            ZIP_FILE="./SX-CONVERTER-GITHUB-READY.zip"
+          fi
+
+          # If not found, search for any ZIP
+          if [ -z "$ZIP_FILE" ]; then
+            ZIP_FILE=$(find . \
               -type f \
-              -not -path "*/.git/*"
+              -iname "*.zip" \
+              -not -path "./.git/*" \
+              | head -n 1)
+          fi
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo ""
+            echo "❌ ERROR: ZIP FILE NOT FOUND"
+            echo ""
+            echo "Upload your SX Converter ZIP to the repository first."
             exit 1
           fi
 
-          echo "ZIP FOUND:"
-          echo "$ZIP"
+          echo "✅ ZIP FOUND:"
+          echo "$ZIP_FILE"
 
-          echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
-      - name: Test ZIP
+      - name: Validate ZIP
         shell: bash
         run: |
-          echo "Testing archive..."
+          echo "Checking ZIP archive..."
 
-          7z t "$ZIP_PATH"
+          python3 - "$ZIP_FILE" <<'PY'
+          import sys
+          import zipfile
 
-          echo "ZIP TEST PASSED."
+          path = sys.argv[1]
+
+          print("ZIP:", path)
+
+          if not zipfile.is_zipfile(path):
+              print("❌ ERROR: This is not a valid ZIP file.")
+              sys.exit(1)
+
+          with zipfile.ZipFile(path, "r") as z:
+              bad = z.testzip()
+
+              if bad:
+                  print("❌ ERROR: Corrupted ZIP entry:", bad)
+                  sys.exit(1)
+
+              files = z.namelist()
+
+              print("ZIP is valid.")
+              print("Files inside ZIP:", len(files))
+
+              for name in files[:50]:
+                  print(" -", name)
+
+          print("✅ ZIP validation successful.")
+          PY
 
       - name: Extract ZIP
         shell: bash
         run: |
-          rm -rf "$GITHUB_WORKSPACE/_sx_extract"
+          rm -rf _sx_extract
+          mkdir -p _sx_extract
 
-          mkdir -p "$GITHUB_WORKSPACE/_sx_extract"
+          python3 - "$ZIP_FILE" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
 
-          echo "Extracting ZIP..."
+          zip_path = sys.argv[1]
+          destination = Path("_sx_extract").resolve()
 
-          7z x "$ZIP_PATH" \
-            -o"$GITHUB_WORKSPACE/_sx_extract" \
-            -y
+          print("Extracting:", zip_path)
 
-          echo "Extraction completed."
+          with zipfile.ZipFile(zip_path, "r") as z:
+              for info in z.infolist():
 
-      - name: Find Project
+                  target = (destination / info.filename).resolve()
+
+                  # Prevent ZIP path traversal
+                  if not str(target).startswith(str(destination)):
+                      print("❌ Unsafe ZIP path:", info.filename)
+                      sys.exit(1)
+
+              z.extractall(destination)
+
+          print("✅ ZIP extraction successful.")
+          PY
+
+      - name: Locate project root
         shell: bash
         run: |
-          BASE="$GITHUB_WORKSPACE/_sx_extract"
+          echo "Searching for SX Converter project..."
 
-          echo "Searching for project..."
+          PROJECT_ROOT=""
 
-          PROJECT=""
-
-          # Check for package.json
-          PACKAGE=$(find "$BASE" \
-            -type f \
-            -name "package.json" \
-            | head -1)
-
-          if [ -n "$PACKAGE" ]; then
-            PROJECT=$(dirname "$PACKAGE")
+          # Project directly at extraction root
+          if [ -f "_sx_extract/package.json" ]; then
+            PROJECT_ROOT="_sx_extract"
+          elif [ -f "_sx_extract/index.html" ]; then
+            PROJECT_ROOT="_sx_extract"
           fi
 
-          # If package.json wasn't found, check index.html
-          if [ -z "$PROJECT" ]; then
-            INDEX=$(find "$BASE" \
+          # Project inside a wrapper directory
+          if [ -z "$PROJECT_ROOT" ]; then
+            PACKAGE=$(find "_sx_extract" \
               -type f \
-              -name "index.html" \
-              | head -1)
+              -name "package.json" \
+              | head -n 1)
 
-            if [ -n "$INDEX" ]; then
-              PROJECT=$(dirname "$INDEX")
+            if [ -n "$PACKAGE" ]; then
+              PROJECT_ROOT=$(dirname "$PACKAGE")
             fi
           fi
 
-          # If still not found, use extracted root
-          if [ -z "$PROJECT" ]; then
-            PROJECT="$BASE"
+          # Fallback to index.html
+          if [ -z "$PROJECT_ROOT" ]; then
+            INDEX=$(find "_sx_extract" \
+              -type f \
+              -name "index.html" \
+              | head -n 1)
+
+            if [ -n "$INDEX" ]; then
+              PROJECT_ROOT=$(dirname "$INDEX")
+            fi
           fi
 
-          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "❌ SX Converter project was not found."
+            echo ""
+            echo "Extracted files:"
+            find "_sx_extract" -maxdepth 5 -type f
+            exit 1
+          fi
 
-          echo "Project location:"
-          echo "$PROJECT"
+          echo "✅ PROJECT ROOT:"
+          echo "$PROJECT_ROOT"
 
-      - name: Install Project Files
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+      - name: Copy project to repository root
         shell: bash
         run: |
-          echo "Copying SX CONVERTER files..."
+          echo "Installing project..."
 
-          cp -a "$PROJECT"/. "$GITHUB_WORKSPACE"/
+          cp -a "$PROJECT_ROOT"/. .
 
-          echo "Removing temporary files..."
+          rm -rf _sx_extract
 
-          rm -rf "$GITHUB_WORKSPACE/_sx_extract"
+          rm -f "$ZIP_FILE"
 
-          rm -f "$ZIP_PATH"
+          echo "✅ Project installed."
 
-          echo "Files installed."
-
-      - name: Verify
+      - name: Verify project
         shell: bash
         run: |
           echo ""
-          echo "======================================"
-          echo "       SX CONVERTER V1.1"
-          echo "          VERIFICATION"
-          echo "======================================"
+          echo "========================================"
+          echo "      SX CONVERTER V1.1"
+          echo "          FINAL CHECK"
+          echo "========================================"
 
-          test -f index.html && echo "OK  index.html" || echo "MISSING index.html"
+          check_file() {
+            if [ -f "$1" ]; then
+              echo "✅ $1"
+            else
+              echo "❌ $1 MISSING"
+            fi
+          }
 
-          test -f package.json && echo "OK  package.json" || echo "MISSING package.json"
+          check_dir() {
+            if [ -d "$1" ]; then
+              echo "✅ $1/"
+            else
+              echo "❌ $1/ MISSING"
+            fi
+          }
 
-          test -f Dockerfile && echo "OK  Dockerfile" || echo "MISSING Dockerfile"
+          check_file "index.html"
+          check_file "package.json"
+          check_file "Dockerfile"
+          check_file "render.yaml"
 
-          test -f render.yaml && echo "OK  render.yaml" || echo "MISSING render.yaml"
-
-          test -d server && echo "OK  server/" || echo "MISSING server/"
-
-          test -d public && echo "OK  public/" || echo "MISSING public/"
+          check_dir "server"
+          check_dir "public"
 
           echo ""
-          echo "Project structure:"
-          find . -maxdepth 3 -type f \
-            -not -path "./.git/*" \
-            | sort
+          echo "========================================"
 
-          echo ""
-          echo "======================================"
-
-      - name: Commit
+      - name: Commit extracted project
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -169,14 +237,15 @@ jobs:
           git add -A
 
           if git diff --cached --quiet; then
-            echo "Nothing to commit."
+            echo "No changes detected."
             exit 0
           fi
 
-          git commit -m "Install SX CONVERTER V1.1 project"
+          git commit -m "Extract SX CONVERTER V1.1 project"
 
           git push origin HEAD:main
 
-          echo "================================"
-          echo "SX CONVERTER INSTALLED SUCCESSFULLY"
-          echo "================================"
+          echo ""
+          echo "========================================"
+          echo "✅ SX CONVERTER V1.1 EXTRACTED"
+          echo "========================================"
